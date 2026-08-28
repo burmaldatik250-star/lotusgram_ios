@@ -60,7 +60,7 @@ provisioning_profile_repository = use_extension("@build_bazel_rules_apple//apple
 bazel_dep(name = "build_configuration")
 local_path_override(
     module_name = "build_configuration",
-    path = "./build-input/configuration-repository",
+    path = "./build-system/example-configuration",
 )
 
 bazel_dep(name = "sourcekit_bazel_bsp", version = "0.7.1")

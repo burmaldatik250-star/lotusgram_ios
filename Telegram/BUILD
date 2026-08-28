@@ -563,15 +563,7 @@ plist_fragment(
         aps_fragment,
         app_groups_fragment,
         siri_fragment,
-        associated_domains_fragment,
         icloud_fragment,
-        apple_pay_merchants_fragment,
-        unrestricted_voip_fragment,
-        carplay_fragment,
-        communication_notifications_fragment,
-        notification_filtering_fragment,
-        signin_fragment,
-        background_gpu_fragment,
     ])
 )
 
@@ -1734,7 +1726,7 @@ ios_application(
     minimum_os_version = minimum_os_version,
     provisioning_profile = select({
         ":disableProvisioningProfilesSetting": None,
-        "//conditions:default": ":Telegram_xcode_profile" if telegram_use_xcode_managed_codesigning else "@build_configuration//provisioning:Telegram.mobileprovision",
+        "//conditions:default": None,
     }),
     entitlements = ":TelegramEntitlements.entitlements",
     infoplists = [
@@ -1844,7 +1836,7 @@ ios_application(
     minimum_os_version = minimum_os_version,
     provisioning_profile = select({
         ":disableProvisioningProfilesSetting": None,
-        "//conditions:default": "@build_configuration//provisioning:Telegram.mobileprovision",
+        "//conditions:default": None,
     }),
     entitlements = ":TelegramEntitlements.entitlements",
     infoplists = [
@@ -1887,7 +1879,7 @@ ios_application(
     minimum_os_version = minimum_os_version,
     provisioning_profile = select({
         ":disableProvisioningProfilesSetting": None,
-        "//conditions:default": "@build_configuration//provisioning:Telegram.mobileprovision",
+        "//conditions:default": None,
     }),
     entitlements = ":TelegramEntitlements.entitlements",
     infoplists = [
@@ -1912,7 +1904,7 @@ ios_application(
     minimum_os_version = minimum_os_version,
     provisioning_profile = select({
         ":disableProvisioningProfilesSetting": None,
-        "//conditions:default": "@build_configuration//provisioning:Telegram.mobileprovision",
+        "//conditions:default": None,
     }),
     entitlements = ":TelegramEntitlements.entitlements",
     infoplists = [
