@@ -1,4 +1,5 @@
 
+telegram_bazel_path = "./build-input/bazel-8.4.2-darwin-arm64"
 telegram_bundle_id = "com.pikmis.lotusgram"
 telegram_api_id = "12345678"
 telegram_api_hash = "a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6"
