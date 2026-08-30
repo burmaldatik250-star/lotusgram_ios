@@ -56,7 +56,7 @@ jobs:
             --xcodeManagedCodesigning \
             --configuration=release_arm64 \
             --buildNumber="$BUILD_NUMBER" \
-            --disableProvisioningProfiles
+            --bazelArguments="--//Telegram:disableProvisioningProfiles"
 
           # collect ipa
           OUTPUT_PATH="build/artifacts"
