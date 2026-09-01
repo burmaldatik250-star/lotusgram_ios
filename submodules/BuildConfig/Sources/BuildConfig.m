@@ -183,7 +183,7 @@ API_AVAILABLE(ios(10))
 }
 
 - (int64_t)appStoreId {
-    return APP_CONFIG_APPSTORE_ID;
+    return 0;
 }
 
 - (NSString *)appSpecificUrlScheme {
