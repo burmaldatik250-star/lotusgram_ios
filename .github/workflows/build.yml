@@ -42,7 +42,7 @@ jobs:
             build \
             --configurationPath="build-system/appstore-configuration.json" \
             --xcodeManagedCodesigning \
-            --configuration=release_arm64 \
+            --configuration=release_sim_arm64 \
             --buildNumber="$BUILD_NUMBER"
 
           # collect ipa
