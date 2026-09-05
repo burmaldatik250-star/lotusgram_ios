@@ -75,14 +75,14 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload IPA Artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: Telegram-iOS-${{ env.BUILD_NUMBER }}
           path: build/artifacts/Telegram.ipa
 
       - name: Upload DSYM Artifact
         if: hashFiles('build/artifacts/Telegram.DSYMs.zip') != ''
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: Telegram-DSYMs-${{ env.BUILD_NUMBER }}
           path: build/artifacts/Telegram.DSYMs.zip
