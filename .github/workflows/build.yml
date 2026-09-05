@@ -43,6 +43,7 @@ jobs:
             build \
             --configurationPath="build-system/fake-codesigning-configuration.json" \
             --gitCodesigningRepository="build-system/fake-codesigning" \
+            --gitCodesigningType="development" \
             --configuration=release_arm64 \
             --buildNumber="$BUILD_NUMBER"
 
