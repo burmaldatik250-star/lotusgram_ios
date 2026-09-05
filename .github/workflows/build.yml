@@ -51,6 +51,11 @@ jobs:
           mkdir -p "$OUTPUT_PATH"
           cp bazel-bin/Telegram/Telegram.ipa $OUTPUT_PATH/
 
+          # collect app for simulator
+          if [ -d bazel-bin/Telegram/Telegram.app ]; then
+            cp -R bazel-bin/Telegram/Telegram.app $OUTPUT_PATH/
+          fi
+
           # collect dsym
           mkdir -p build/DSYMs
           if [ -d bazel-bin/Telegram/*.dSYM ]; then
@@ -79,6 +84,13 @@ jobs:
         with:
           name: Telegram-iOS-${{ env.BUILD_NUMBER }}
           path: build/artifacts/Telegram.ipa
+
+      - name: Upload APP Artifact
+        if: hashFiles('build/artifacts/Telegram.app') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: Telegram-APP-${{ env.BUILD_NUMBER }}
+          path: build/artifacts/Telegram.app
 
       - name: Upload DSYM Artifact
         if: hashFiles('build/artifacts/Telegram.DSYMs.zip') != ''
