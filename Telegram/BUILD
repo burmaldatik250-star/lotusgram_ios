@@ -1007,7 +1007,7 @@ ios_extension(
     minimum_os_version = minimum_os_version,
     provisioning_profile = select({
         ":disableProvisioningProfilesSetting": None,
-        "//conditions:default": None,
+        "//conditions:default": "@build_configuration//provisioning:Share.mobileprovision",
     }),
     deps = [":ShareExtensionLib"],
     frameworks = [
@@ -1114,7 +1114,7 @@ ios_extension(
     #ipa_post_processor = ":SetMinOsVersionNotificationContentExtension",
     provisioning_profile = select({
         ":disableProvisioningProfilesSetting": None,
-        "//conditions:default": None,
+        "//conditions:default": "@build_configuration//provisioning:NotificationContent.mobileprovision",
     }),
     deps = [":NotificationContentExtensionLib"],
     frameworks = [
@@ -1220,7 +1220,7 @@ ios_extension(
     #provides_main = True,
     provisioning_profile = select({
         ":disableProvisioningProfilesSetting": None,
-        "//conditions:default": None,
+        "//conditions:default": "@build_configuration//provisioning:Widget.mobileprovision",
     }),
     deps = [
         ":WidgetExtensionLib",
@@ -1356,7 +1356,7 @@ ios_extension(
     #ipa_post_processor = ":SetMinOsVersionIntentsExtension",
     provisioning_profile = select({
         ":disableProvisioningProfilesSetting": None,
-        "//conditions:default": None,
+        "//conditions:default": "@build_configuration//provisioning:Intents.mobileprovision",
     }),
     deps = [":IntentsExtensionLib"],
     frameworks = [
@@ -1451,7 +1451,7 @@ ios_extension(
     #ipa_post_processor = ":SetMinOsVersionBroadcastUploadExtension",
     provisioning_profile = select({
         ":disableProvisioningProfilesSetting": None,
-        "//conditions:default": None,
+        "//conditions:default": "@build_configuration//provisioning:BroadcastUpload.mobileprovision",
     }),
     deps = [":BroadcastUploadExtensionLib"],
     frameworks = [
@@ -1511,7 +1511,7 @@ ios_extension(
     minimum_os_version = minimum_os_version, # maintain the same minimum OS version across extensions
     provisioning_profile = select({
         ":disableProvisioningProfilesSetting": None,
-        "//conditions:default": None,
+        "//conditions:default": "@build_configuration//provisioning:NotificationService.mobileprovision",
     }),
     deps = ["//Telegram/NotificationService:NotificationServiceExtensionLib"],
     frameworks = [

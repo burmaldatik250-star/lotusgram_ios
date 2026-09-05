@@ -1,0 +1,15 @@
+{
+	"bundle_id": "com.pikmis.lotusgram",
+	"api_id": "12345678",
+	"api_hash": "a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6",
+	"team_id": "",
+	"app_center_id": "0",
+	"is_internal_build": "false",
+	"is_appstore_build": "false",
+	"appstore_id": "",
+	"app_specific_url_scheme": "tg",
+	"premium_iap_product_id": "org.telegram.telegramPremium.monthly",
+	"enable_siri": true,
+	"enable_icloud": true,
+	"enable_watch": true
+}
