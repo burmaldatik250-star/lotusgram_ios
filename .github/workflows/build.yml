@@ -5,74 +5,184 @@ on:
     branches: [ main ]
 
   workflow_dispatch:
+    inputs:
+      target:
+        description: 'What to build'
+        required: false
+        default: 'auto'
+        type: choice
+        options:
+          - auto
+          - device
+          - unsigned-device
+          - simulator
+          - all
+
+env:
+  BAZEL_USER_ROOT: /private/var/tmp/_bazel_containerhost
 
 jobs:
-  build:
-    runs-on: macos-15
-
+  # Decides which build to run. Kept on a cheap Linux runner because `secrets` cannot be
+  # inspected in a job-level `if`.
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      signed: ${{ steps.decide.outputs.signed }}
+      device: ${{ steps.decide.outputs.device }}
+      unsigned_device: ${{ steps.decide.outputs.unsigned_device }}
+      simulator: ${{ steps.decide.outputs.simulator }}
     steps:
-      - uses: actions/checkout@v2
+      - id: decide
+        env:
+          CERT: ${{ secrets.IOS_CERTIFICATE_BASE64 }}
+          PROFILES: ${{ secrets.IOS_PROVISION_PROFILES_BASE64 }}
+          TARGET: ${{ inputs.target }}
+        run: |
+          signed=false
+          if [ -n "$CERT" ] && [ -n "$PROFILES" ]; then
+            signed=true
+          fi
+
+          target="${TARGET:-auto}"
+          if [ "$target" = "auto" ]; then
+            if [ "$signed" = "true" ]; then target=device; else target=unsigned-device; fi
+          fi
+
+          device=false; unsigned_device=false; simulator=false
+          case "$target" in
+            device)
+              if [ "$signed" = "true" ]; then
+                device=true
+              else
+                echo "::warning::A signed device build was requested but IOS_CERTIFICATE_BASE64 / IOS_PROVISION_PROFILES_BASE64 are not set. Falling back to an unsigned build."
+                unsigned_device=true
+              fi
+              ;;
+            unsigned-device) unsigned_device=true ;;
+            simulator) simulator=true ;;
+            all)
+              unsigned_device=true; simulator=true
+              if [ "$signed" = "true" ]; then device=true; else unsigned_device=true; fi
+              ;;
+            *) echo "::error::Unknown target '$target'"; exit 1 ;;
+          esac
+
+          echo "signed=$signed" >> "$GITHUB_OUTPUT"
+          echo "device=$device" >> "$GITHUB_OUTPUT"
+          echo "unsigned_device=$unsigned_device" >> "$GITHUB_OUTPUT"
+          echo "simulator=$simulator" >> "$GITHUB_OUTPUT"
+
+  # ---------------------------------------------------------------------------
+  # Signed build: an IPA that installs on a physical device.
+  #
+  # Needs these repository secrets:
+  #   IOS_CERTIFICATE_BASE64         base64 of the signing certificate (.p12)
+  #   IOS_CERTIFICATE_PASSWORD       its password (may be empty)
+  #   IOS_PROVISION_PROFILES_BASE64  base64 of a zip with the .mobileprovision files
+  #   APPLE_TEAM_ID                  your 10 character team id
+  # Optional:
+  #   IOS_BUNDLE_ID, TELEGRAM_API_ID, TELEGRAM_API_HASH
+  # ---------------------------------------------------------------------------
+  device:
+    name: Build signed IPA (device)
+    needs: plan
+    if: needs.plan.outputs.device == 'true'
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
         with:
           submodules: 'recursive'
           fetch-depth: '0'
 
       - name: Set active Xcode path
         run: |
-          XCODE_VERSION=$(cat versions.json | python3 -c 'import json,sys;obj=json.load(sys.stdin);print(obj["xcode"]);')
-          sudo xcode-select -s /Applications/Xcode_$XCODE_VERSION.app/Contents/Developer
+          XCODE_VERSION=$(python3 -c 'import json;print(json.load(open("versions.json"))["xcode"])')
+          sudo xcode-select -s "/Applications/Xcode_$XCODE_VERSION.app/Contents/Developer"
 
-      - name: Build the App
+      - name: Compute build number
+        run: |
+          BUILD_NUMBER_OFFSET="$(cat build_number_offset)"
+          COMMIT_COUNT="$(git rev-list --count HEAD)"
+          BUILD_NUMBER="$((COMMIT_COUNT + BUILD_NUMBER_OFFSET))"
+          echo "BUILD_NUMBER=$BUILD_NUMBER" >> "$GITHUB_ENV"
+          echo "APP_VERSION=$(python3 -c 'import json;print(json.load(open("versions.json"))["app"])')" >> "$GITHUB_ENV"
+
+      - name: Stage codesigning data
+        env:
+          IOS_CERTIFICATE_BASE64: ${{ secrets.IOS_CERTIFICATE_BASE64 }}
+          IOS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
+          IOS_PROVISION_PROFILES_BASE64: ${{ secrets.IOS_PROVISION_PROFILES_BASE64 }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          ARGS=(
+            --output build-input/codesigning
+            --configurationOutput build-input/device-configuration.json
+            --baseConfiguration build-system/fake-codesigning-configuration.json
+            --certificateBase64Env IOS_CERTIFICATE_BASE64
+            --certificatePasswordEnv IOS_CERTIFICATE_PASSWORD
+            --profilesZipBase64Env IOS_PROVISION_PROFILES_BASE64
+            --teamIdEnv APPLE_TEAM_ID
+            --keychainName build.keychain
+          )
+          if [ -n "${{ secrets.IOS_BUNDLE_ID }}" ]; then
+            ARGS+=(--bundleId "${{ secrets.IOS_BUNDLE_ID }}")
+          fi
+          if [ -n "${{ secrets.TELEGRAM_API_ID }}" ]; then
+            ARGS+=(--set "api_id=${{ secrets.TELEGRAM_API_ID }}")
+          fi
+          if [ -n "${{ secrets.TELEGRAM_API_HASH }}" ]; then
+            ARGS+=(--set "api_hash=${{ secrets.TELEGRAM_API_HASH }}")
+          fi
+          python3 build-system/prepare-codesigning.py "${ARGS[@]}"
+
+      - name: Build the app
         run: |
           set -x
-
-          # use canonical bazel root
-          BAZEL_USER_ROOT="/private/var/tmp/_bazel_containerhost"
-
-          BUILD_NUMBER_OFFSET="$(cat build_number_offset)"
-
-          export APP_VERSION=$(cat versions.json | python3 -c 'import json,sys;obj=json.load(sys.stdin);print(obj["app"]);')
-          export COMMIT_COUNT=$(git rev-list --count HEAD)
-          export COMMIT_COUNT="$(($COMMIT_COUNT+$BUILD_NUMBER_OFFSET))"
-          export BUILD_NUMBER="$COMMIT_COUNT"
-          echo "BUILD_NUMBER=$(echo $BUILD_NUMBER)" >> $GITHUB_ENV
-          echo "APP_VERSION=$(echo $APP_VERSION)" >> $GITHUB_ENV
-
-          export TELEGRAM_CODESIGNING_GIT_PASSWORD="fake_password"
           python3 -u build-system/Make/Make.py \
             --bazelUserRoot="$BAZEL_USER_ROOT" \
             build \
-            --configurationPath="build-system/fake-codesigning-configuration.json" \
-            --gitCodesigningRepository="build-system/fake-codesigning" \
-            --gitCodesigningType="development" \
+            --configurationPath=build-input/device-configuration.json \
+            --codesigningInformationPath=build-input/codesigning \
             --configuration=release_arm64 \
             --buildNumber="$BUILD_NUMBER"
 
-          # collect ipa
+      - name: Collect artifacts
+        run: |
+          set -euo pipefail
           OUTPUT_PATH="build/artifacts"
-          rm -rf "$OUTPUT_PATH"
-          mkdir -p "$OUTPUT_PATH"
-          cp bazel-bin/Telegram/Telegram.ipa $OUTPUT_PATH/
+          rm -rf "$OUTPUT_PATH" && mkdir -p "$OUTPUT_PATH"
+          cp bazel-bin/Telegram/Telegram.ipa "$OUTPUT_PATH/"
 
-          # collect app for simulator
-          if [ -d bazel-bin/Telegram/Telegram.app ]; then
-            cp -R bazel-bin/Telegram/Telegram.app $OUTPUT_PATH/
-          fi
-
-          # collect dsym
           mkdir -p build/DSYMs
-          if [ -d bazel-bin/Telegram/*.dSYM ]; then
-            cp -R bazel-bin/Telegram/*.dSYM build/DSYMs/
-            zip -r "./$OUTPUT_PATH/Telegram.DSYMs.zip" build/DSYMs 1>/dev/null
+          shopt -s nullglob
+          dsyms=(bazel-bin/Telegram/*.dSYM)
+          if [ ${#dsyms[@]} -gt 0 ]; then
+            cp -R "${dsyms[@]}" build/DSYMs/
+            (cd build && zip -r -q "../$OUTPUT_PATH/Telegram.DSYMs.zip" DSYMs)
           fi
 
-      - name: Create Release and Upload Assets
-        uses: softprops/action-gh-release@v1
+          echo "The IPA is signed and can be installed on the devices listed in the"
+          echo "provisioning profiles (development/ad-hoc) or on any device (enterprise)."
+          codesign -dvv "$OUTPUT_PATH/Telegram.ipa" 2>&1 || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Telegram-iOS-${{ env.BUILD_NUMBER }}
+          path: build/artifacts/Telegram.ipa
+
+      - uses: actions/upload-artifact@v4
+        if: hashFiles('build/artifacts/Telegram.DSYMs.zip') != ''
+        with:
+          name: Telegram-DSYMs-${{ env.BUILD_NUMBER }}
+          path: build/artifacts/Telegram.DSYMs.zip
+
+      - uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/')
         with:
           tag_name: build-${{ env.BUILD_NUMBER }}
-          name: Telegram ${{ env.APP_VERSION }} (${{ env.BUILD_NUMBER }})
-          body: |
-            An unsigned build of Telegram for iOS ${{ env.APP_VERSION }} (${{ env.BUILD_NUMBER }})
+          name: LotusGram ${{ env.APP_VERSION }} (${{ env.BUILD_NUMBER }})
+          body: A signed build of LotusGram for iOS ${{ env.APP_VERSION }} (${{ env.BUILD_NUMBER }})
           draft: false
           prerelease: false
           files: |
@@ -81,22 +191,146 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Upload IPA Artifact
-        uses: actions/upload-artifact@v4
+  # ---------------------------------------------------------------------------
+  # Self-signed device build.
+  #
+  # rules_apple cannot build for a physical device without provisioning profiles, so this
+  # job embeds the bundled SELF-SIGNED profiles (build-system/fake-codesigning, regenerated
+  # for this repo's bundle id by `generate-fake-profiles`) and signs with the bundled
+  # self-signed certificate. The IPA is structurally a device build but its signature is
+  # not Apple-issued: install it by re-signing with your own certificate, e.g.
+  #   python3 build-system/resign-ipa.py --ipa Telegram.ipa --profilesPath ~/profiles \
+  #       --bundleId com.yourname.lotusgram --minimalEntitlements
+  # or through AltStore / Sideloadly.
+  # ---------------------------------------------------------------------------
+  unsigned-device:
+    name: Build self-signed device IPA (re-sign to install)
+    needs: plan
+    if: needs.plan.outputs.unsigned_device == 'true'
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
         with:
-          name: Telegram-iOS-${{ env.BUILD_NUMBER }}
+          submodules: 'recursive'
+          fetch-depth: '0'
+
+      - name: Set active Xcode path
+        run: |
+          XCODE_VERSION=$(python3 -c 'import json;print(json.load(open("versions.json"))["xcode"])')
+          sudo xcode-select -s "/Applications/Xcode_$XCODE_VERSION.app/Contents/Developer"
+
+      - name: Compute build number
+        run: |
+          BUILD_NUMBER_OFFSET="$(cat build_number_offset)"
+          COMMIT_COUNT="$(git rev-list --count HEAD)"
+          echo "BUILD_NUMBER=$((COMMIT_COUNT + BUILD_NUMBER_OFFSET))" >> "$GITHUB_ENV"
+          echo "APP_VERSION=$(python3 -c 'import json;print(json.load(open("versions.json"))["app"])')" >> "$GITHUB_ENV"
+
+      - name: Import the self-signed certificate into a temporary keychain
+        run: |
+          set -euo pipefail
+          KEYCHAIN="build.keychain"
+          KEYCHAIN_PASSWORD="build"
+          security delete-keychain "$KEYCHAIN" || true
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | sed s/\"//g)
+          security set-keychain-settings "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import build-system/fake-codesigning/certs/SelfSigned.p12 \
+            -k "$KEYCHAIN" -P "" -T /usr/bin/codesign -T /usr/bin/security
+          security import build-system/AppleWWDRCAG3.cer \
+            -k "$KEYCHAIN" -P "" -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security find-identity -v -p codesigning || true
+
+      - name: Build the app
+        run: |
+          set -x
+          python3 -u build-system/Make/Make.py \
+            --bazelUserRoot="$BAZEL_USER_ROOT" \
+            build \
+            --configurationPath=build-system/fake-codesigning-configuration.json \
+            --codesigningInformationPath=build-system/fake-codesigning \
+            --configuration=release_arm64 \
+            --buildNumber="$BUILD_NUMBER"
+
+      - name: Collect artifacts
+        run: |
+          set -euo pipefail
+          OUTPUT_PATH="build/artifacts"
+          rm -rf "$OUTPUT_PATH" && mkdir -p "$OUTPUT_PATH"
+          cp bazel-bin/Telegram/Telegram.ipa "$OUTPUT_PATH/"
+
+          mkdir -p build/DSYMs
+          shopt -s nullglob
+          dsyms=(bazel-bin/Telegram/*.dSYM)
+          if [ ${#dsyms[@]} -gt 0 ]; then
+            cp -R "${dsyms[@]}" build/DSYMs/
+            (cd build && zip -r -q "../$OUTPUT_PATH/Telegram.DSYMs.zip" DSYMs)
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Telegram-iOS-unsigned-${{ env.BUILD_NUMBER }}
           path: build/artifacts/Telegram.ipa
 
-      - name: Upload APP Artifact
-        if: hashFiles('build/artifacts/Telegram.app') != ''
-        uses: actions/upload-artifact@v4
-        with:
-          name: Telegram-APP-${{ env.BUILD_NUMBER }}
-          path: build/artifacts/Telegram.app
-
-      - name: Upload DSYM Artifact
+      - uses: actions/upload-artifact@v4
         if: hashFiles('build/artifacts/Telegram.DSYMs.zip') != ''
-        uses: actions/upload-artifact@v4
         with:
           name: Telegram-DSYMs-${{ env.BUILD_NUMBER }}
           path: build/artifacts/Telegram.DSYMs.zip
+
+  # ---------------------------------------------------------------------------
+  # Simulator build: a .app you can drag into the Simulator.
+  # ---------------------------------------------------------------------------
+  simulator:
+    name: Build app (simulator)
+    needs: plan
+    if: needs.plan.outputs.simulator == 'true'
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: 'recursive'
+          fetch-depth: '0'
+
+      - name: Set active Xcode path
+        run: |
+          XCODE_VERSION=$(python3 -c 'import json;print(json.load(open("versions.json"))["xcode"])')
+          sudo xcode-select -s "/Applications/Xcode_$XCODE_VERSION.app/Contents/Developer"
+
+      - name: Compute build number
+        run: |
+          BUILD_NUMBER_OFFSET="$(cat build_number_offset)"
+          COMMIT_COUNT="$(git rev-list --count HEAD)"
+          echo "BUILD_NUMBER=$((COMMIT_COUNT + BUILD_NUMBER_OFFSET))" >> "$GITHUB_ENV"
+
+      - name: Build the app
+        run: |
+          set -x
+          python3 -u build-system/Make/Make.py \
+            --bazelUserRoot="$BAZEL_USER_ROOT" \
+            build \
+            --configurationPath=build-system/fake-codesigning-configuration.json \
+            --xcodeManagedCodesigning \
+            --allowMissingPushEntitlement \
+            --disableProvisioningProfiles \
+            --configuration=release_sim_arm64 \
+            --buildNumber="$BUILD_NUMBER"
+
+      - name: Collect artifacts
+        run: |
+          set -euo pipefail
+          OUTPUT_PATH="build/artifacts"
+          rm -rf "$OUTPUT_PATH" && mkdir -p "$OUTPUT_PATH"
+          # rules_apple does not leave a standalone .app next to the binary for simulator
+          # builds; the .app lives inside the IPA, so unpack it from there.
+          rm -rf build/sim-unpack && mkdir -p build/sim-unpack
+          unzip -q bazel-bin/Telegram/Telegram.ipa -d build/sim-unpack
+          cp -R build/sim-unpack/Payload/Telegram.app "$OUTPUT_PATH/"
+          (cd "$OUTPUT_PATH" && zip -r -q Telegram-app.zip Telegram.app)
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Telegram-simulator-${{ env.BUILD_NUMBER }}
+          path: build/artifacts/Telegram-app.zip

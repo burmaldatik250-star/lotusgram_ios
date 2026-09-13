@@ -46,6 +46,7 @@ class BazelCommandLine:
         self.show_actions = False
         self.enable_sandbox = False
         self.disable_provisioning_profiles = False
+        self.disable_extensions = False
         self.profile_swift = False
 
         self.common_args = [
@@ -132,6 +133,9 @@ class BazelCommandLine:
 
     def set_disable_provisioning_profiles(self):
         self.disable_provisioning_profiles = True
+
+    def set_disable_extensions(self, value):
+        self.disable_extensions = value
 
     def set_profile_swift(self, value):
         self.profile_swift = value
@@ -275,6 +279,9 @@ class BazelCommandLine:
 
         if self.disable_provisioning_profiles:
             combined_arguments += ['--//Telegram:disableProvisioningProfiles']
+
+        if self.disable_extensions:
+            combined_arguments += ['--//Telegram:disableExtensions']
 
         combined_arguments += self.common_args
         combined_arguments += self.common_build_args
@@ -495,11 +502,20 @@ def resolve_configuration(base_path, bazel_command_line: BazelCommandLine, argum
         additional_codesigning_output_path=additional_codesigning_output_path
     )
     if codesigning_data.aps_environment is None:
-        print('Could not find a valid aps-environment entitlement in the provided provisioning profiles')
-        sys.exit(1)
+        if getattr(arguments, 'allowMissingPushEntitlement', False):
+            print('No aps-environment entitlement in the provisioning profiles: push notifications will be disabled.')
+        else:
+            print('Could not find a valid aps-environment entitlement in the provided provisioning profiles')
+            print('Pass --allowMissingPushEntitlement to build anyway (the app will not receive push notifications).')
+            sys.exit(1)
 
     if bazel_command_line is not None:
-        build_configuration.write_to_variables_file(bazel_path=bazel_command_line.bazel, use_xcode_managed_codesigning=codesigning_data.use_xcode_managed_codesigning, aps_environment=codesigning_data.aps_environment, path=configuration_repository_path + '/variables.bzl')
+        # A missing aps-environment must be written as an empty string, otherwise Telegram/BUILD
+        # would emit "<string>None</string>" into the entitlements and codesigning would fail.
+        aps_environment = codesigning_data.aps_environment
+        if aps_environment is None:
+            aps_environment = ''
+        build_configuration.write_to_variables_file(bazel_path=bazel_command_line.bazel, use_xcode_managed_codesigning=codesigning_data.use_xcode_managed_codesigning, aps_environment=aps_environment, path=configuration_repository_path + '/variables.bzl')
 
     provisioning_profile_files = []
     for file_name in os.listdir(provisioning_path):
@@ -511,6 +527,33 @@ def resolve_configuration(base_path, bazel_command_line: BazelCommandLine, argum
         for file_name in provisioning_profile_files:
             file.write('    "{}",\n'.format(file_name))
         file.write('])\n')
+
+    # The main app bundle references @build_configuration//provisioning:Telegram.mobileprovision.
+    # rules_apple fails the analysis of a DEVICE build when any bundle has no provisioning
+    # profile ("Building for device, but no provisioning_profile attribute was set"), so a
+    # missing profile can only be tolerated for simulator builds (and Xcode project
+    # generation, which has no configuration yet). For device builds, fail early with a
+    # message that points at the actual fix instead of letting Bazel die later.
+    if 'Telegram.mobileprovision' not in provisioning_profile_files:
+        configuration_name = getattr(arguments, 'configuration', None)
+        is_device_configuration = configuration_name in ('debug_arm64', 'release_arm64')
+        print('')
+        print('WARNING: no provisioning profile matching "{}.{}" was found.'.format(
+            build_configuration.team_id if build_configuration.team_id != '' else '<empty team_id>',
+            build_configuration.bundle_id
+        ))
+        if is_device_configuration:
+            print('         A build for a physical device requires a provisioning profile for every')
+            print('         bundle; without one rules_apple fails the analysis. Either provide signing')
+            print('         data whose profiles match the bundle id (see docs/device-builds.md), or use')
+            print('         the bundled self-signed profiles: regenerate them for your bundle id with')
+            print('         "generate-fake-profiles" and keep team_id in the configuration in sync.')
+            sys.exit(1)
+        print('         Falling back to ad-hoc codesigning: the resulting .app will NOT install on a')
+        print('         physical device, but it runs on the simulator.')
+        print('')
+        if bazel_command_line is not None:
+            bazel_command_line.set_disable_provisioning_profiles()
 
 
 def generate_project(bazel, arguments):
@@ -551,6 +594,12 @@ def generate_project(bazel, arguments):
         project_include_release = arguments.projectIncludeRelease
     if arguments.xcodeManagedCodesigning is not None and arguments.xcodeManagedCodesigning == True:
         disable_extensions = True
+    # resolve_configuration() turns provisioning profiles off when no profile matched the
+    # bundle id (which is always the case with --xcodeManagedCodesigning). The generated
+    # project must not reference @build_configuration//provisioning:Telegram.mobileprovision
+    # in that situation, because the target does not exist.
+    if bazel_command_line.disable_provisioning_profiles:
+        disable_provisioning_profiles = True
     if arguments.generateDsym is not None:
         generate_dsym = arguments.generateDsym
     if arguments.target is not None:
@@ -615,6 +664,13 @@ def build(bazel, arguments):
     bazel_command_line.set_show_actions(arguments.showActions)
     bazel_command_line.set_enable_sandbox(arguments.sandbox)
     bazel_command_line.set_profile_swift(arguments.profileSwift)
+
+    # resolve_configuration() may have already turned provisioning profiles off because no profile
+    # matched the bundle id; only ever turn them on here, never back off.
+    if arguments.disableProvisioningProfiles:
+        bazel_command_line.set_disable_provisioning_profiles()
+    if arguments.disableExtensions:
+        bazel_command_line.set_disable_extensions(True)
 
     bazel_command_line.set_split_swiftmodules(arguments.enableParallelSwiftmoduleGeneration)
 
@@ -797,6 +853,18 @@ def add_codesigning_common_arguments(current_parser: argparse.ArgumentParser):
         default=False,
         help='''
             Always refresh codesigning repository.
+            '''
+    )
+
+    current_parser.add_argument(
+        '--allowMissingPushEntitlement',
+        action='store_true',
+        required=False,
+        default=False,
+        help='''
+            Do not fail when the provisioning profiles carry no aps-environment entitlement.
+            Required for profiles issued to a personal (free) Apple ID: they cannot enable push
+            notifications, so the built app will simply not register for them.
             '''
     )
 
@@ -1009,6 +1077,27 @@ if __name__ == '__main__':
         default=False,
         help='Respect MODULE.bazel.lock.'
     )
+    buildParser.add_argument(
+        '--disableProvisioningProfiles',
+        action='store_true',
+        default=False,
+        help='''
+            Sign every bundle ad-hoc instead of embedding provisioning profiles.
+            Only usable with simulator configurations: rules_apple fails the analysis of a
+            device build without profiles ("Building for device, but no provisioning_profile
+            attribute was set"). For a device IPA, embed the bundled self-signed profiles
+            (the default) and re-sign it with build-system/resign-ipa.py.
+            '''
+    )
+    buildParser.add_argument(
+        '--disableExtensions',
+        action='store_true',
+        default=False,
+        help='''
+            Do not embed app extensions (Share, Widget, SiriIntents, Notification*, BroadcastUpload).
+            Useful when only a provisioning profile for the main bundle is available.
+            '''
+    )
 
     remote_build_parser = subparsers.add_parser('remote-build', help='Build the app using a remote environment.')
     add_codesigning_common_arguments(remote_build_parser)
@@ -1055,6 +1144,12 @@ if __name__ == '__main__':
         type=str,
         help='Bazel remote cache host address.'
     )
+
+    generate_fake_profiles_parser = subparsers.add_parser('generate-fake-profiles', help='Regenerate the self-signed provisioning profiles in build-system/fake-codesigning.')
+    generate_fake_profiles_parser.add_argument('--teamId', required=True, help='Team id to bake into the profiles.')
+    generate_fake_profiles_parser.add_argument('--bundleId', required=True, help='Bundle id to bake into the profiles.')
+    generate_fake_profiles_parser.add_argument('--p12', default='build-system/fake-codesigning/certs/SelfSigned.p12', help='Self-signed certificate to sign the profiles with.')
+    generate_fake_profiles_parser.add_argument('--destination', default='build-system/fake-codesigning/profiles', help='Directory to write the .mobileprovision files to.')
 
     generate_profiles_build_parser = subparsers.add_parser('generate-verification-profiles', help='Generate provisioning profiles that can be used to build a veritication IPA.')
     add_codesigning_common_arguments(generate_profiles_build_parser)
@@ -1223,6 +1318,12 @@ if __name__ == '__main__':
         print(args)
 
     if args.commandName is None:
+        sys.exit(0)
+
+    if args.commandName == 'generate-fake-profiles':
+        import GenerateFakeProfiles
+        GenerateFakeProfiles.generate(team_id=args.teamId, bundle_id=args.bundleId,
+                                      p12_path=args.p12, destination=args.destination)
         sys.exit(0)
 
     bazel_path = None

@@ -1720,9 +1720,13 @@ ios_application(
     ),
     families = ["iphone", "ipad"],
     minimum_os_version = minimum_os_version,
+    # The main binary must carry a provisioning profile as well, otherwise rules_apple signs it
+    # ad-hoc and iOS refuses to install the resulting IPA on a physical device.
+    # When no matching profile is available Make.py turns on `disableProvisioningProfiles`, which
+    # falls back to ad-hoc signing (simulator runs and IPA re-signing for sideloading).
     provisioning_profile = select({
         ":disableProvisioningProfilesSetting": None,
-        "//conditions:default": None,
+        "//conditions:default": "@build_configuration//provisioning:Telegram.mobileprovision",
     }),
     entitlements = ":TelegramEntitlements.entitlements",
     infoplists = [

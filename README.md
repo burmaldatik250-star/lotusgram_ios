@@ -72,6 +72,13 @@ python3 build-system/Make/Make.py \
     --configuration=release_arm64
 ```
 
+## Installing on a physical device
+
+An IPA only installs on a real iPhone when every bundle inside it carries an Apple-issued
+provisioning profile. See [docs/device-builds.md](docs/device-builds.md) for the full guide:
+signing in CI with an Apple Developer account, and building unsigned + re-signing with a
+personal (free) Apple ID for sideloading.
+
 # FAQ
 
 ## Xcode is stuck at "build-request.json not updated yet"
